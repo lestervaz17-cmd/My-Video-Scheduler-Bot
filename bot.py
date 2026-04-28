@@ -1,9 +1,6 @@
 from dotenv import load_dotenv
 import os
-
-load_dotenv()
-
-TOKEN = os.getenv("BOT_TOKEN")
+import sqlite3
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -13,32 +10,34 @@ from telegram.ext import (
     ContextTypes,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import json
-import os
+
+load_dotenv()
 
 # 🔑 CONFIG
+TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = "@nsfw18content"
 YOUR_USER_ID = 8789590706
+LOG_CHANNEL_ID = -1003873677982  # 👈 REPLACE THIS with your Log Channel ID
 
-QUEUE_FILE = "queue.json"
+DB_FILE = "scheduler.db"
 
-# 📦 LOAD & SAVE QUEUE
-def load_queue():
-    if os.path.exists(QUEUE_FILE):
-        with open(QUEUE_FILE, "r") as f:
-            return json.load(f)
-    return []
+# 📦 SQLITE DATABASE SETUP
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS videos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id TEXT,
+            caption TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-def save_queue(queue):
-    with open(QUEUE_FILE, "w") as f:
-        json.dump(queue, f)
+init_db()
 
-videos_queue = load_queue()
-
-# ⏰ Scheduler
-scheduler = AsyncIOScheduler()
-
-# 📥 SAVE VIDEO
+# 📥 SAVE VIDEO TO DB
 async def save_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != YOUR_USER_ID:
         return
@@ -47,99 +46,72 @@ async def save_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or ""
 
     if video:
-        file_id = video.file_id
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO videos (file_id, caption) VALUES (?, ?)', (video.file_id, caption))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text("Video saved to Database ✅")
 
-        videos_queue.append({
-            "file_id": file_id,
-            "caption": caption
-        })
-
-        save_queue(videos_queue)
-
-        await update.message.reply_text("Video saved with caption ✅")
-
-# 📤 POST VIDEO
+# 📤 POST VIDEO & LOG
 async def post_video():
-    print("⏰ Scheduler triggered")
-
-    if videos_queue:
-        video_data = videos_queue.pop(0)
-        save_queue(videos_queue)
-
-        print("📤 Posting video...")
-
-        await app.bot.send_video(
-            chat_id=CHANNEL_ID,
-            video=video_data["file_id"],
-            caption=video_data["caption"]
-        )
-
-        print("✅ Posted successfully")
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, file_id, caption FROM videos ORDER BY id LIMIT 1')
+    video_data = cursor.fetchone()
+    
+    if video_data:
+        db_id, file_id, caption = video_data
+        
+        try:
+            # Post to main channel
+            await app.bot.send_video(chat_id=CHANNEL_ID, video=file_id, caption=caption)
+            
+            # Delete from DB after posting
+            cursor.execute('DELETE FROM videos WHERE id = ?', (db_id,))
+            conn.commit()
+            
+            # 📝 LOG TO PRIVATE CHANNEL
+            await app.bot.send_message(
+                chat_id=LOG_CHANNEL_ID, 
+                text=f"✅ SUCCESS: Video posted to {CHANNEL_ID}\nCaption: {caption[:50]}..."
+            )
+            print("✅ Posted and Logged successfully")
+        except Exception as e:
+            await app.bot.send_message(chat_id=LOG_CHANNEL_ID, text=f"❌ ERROR: Failed to post video: {e}")
     else:
         print("⚠️ Queue empty")
+    
+    conn.close()
 
-# 📋 SHOW QUEUE
+# 📋 SHOW QUEUE FROM DB
 async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != 8789590706:
-        return
+    if update.message.from_user.id != YOUR_USER_ID: return
+    
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT caption FROM videos LIMIT 10')
+    rows = cursor.fetchall()
+    conn.close()
 
-    if not videos_queue:
+    if not rows:
         await update.message.reply_text("Queue is empty")
         return
 
-    text = "📦 Upcoming videos:\n"
-    for i, video in enumerate(videos_queue[:10], start=1):
-        text += f"{i}. {video['caption'][:30]}...\n"
-
+    text = "📦 Upcoming videos (Database):\n"
+    for i, row in enumerate(rows, start=1):
+        text += f"{i}. {row[0][:30]}...\n"
     await update.message.reply_text(text)
 
-# ⏭️ SKIP
-async def skip_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != 8789590706:
-        return
-
-    if not videos_queue:
-        await update.message.reply_text("Queue is empty")
-        return
-
-    videos_queue.pop(0)
-    save_queue(videos_queue)
-
-    await update.message.reply_text("⏭️ Skipped next video")
-
-# 🗑️ CLEAR
+# 🗑️ CLEAR DB
 async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != 8789590706:
-        return
-
-    videos_queue.clear()
-    save_queue(videos_queue)
-
-    await update.message.reply_text("🗑️ Queue cleared")
-
-# ❌ DELETE SPECIFIC
-async def delete_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != 8789590706:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /delete 3")
-        return
-
-    try:
-        index = int(context.args[0]) - 1
-
-        if index < 0 or index >= len(videos_queue):
-            await update.message.reply_text("Invalid number")
-            return
-
-        videos_queue.pop(index)
-        save_queue(videos_queue)
-
-        await update.message.reply_text(f"❌ Deleted video #{index+1}")
-
-    except:
-        await update.message.reply_text("Enter a valid number")
+    if update.message.from_user.id != YOUR_USER_ID: return
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM videos')
+    conn.commit()
+    conn.close()
+    await update.message.reply_text("🗑️ Database Queue cleared")
 
 # 🚀 CREATE APP
 app = ApplicationBuilder().token(TOKEN).build()
@@ -147,22 +119,19 @@ app = ApplicationBuilder().token(TOKEN).build()
 # 🔗 HANDLERS
 app.add_handler(MessageHandler(filters.VIDEO, save_video))
 app.add_handler(CommandHandler("queue", show_queue))
-app.add_handler(CommandHandler("skip", skip_video))
 app.add_handler(CommandHandler("clear", clear_queue))
-app.add_handler(CommandHandler("delete", delete_video))
 
-# ⏰ SCHEDULE (10 POSTS DAILY AT :05)
+# ⏰ Scheduler
+scheduler = AsyncIOScheduler()
 POST_HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
 
 for hour in POST_HOURS:
     scheduler.add_job(post_video, "cron", hour=hour, minute=5)
 
-# ▶️ START SCHEDULER AFTER BOT STARTS
 async def on_startup(app):
     scheduler.start()
 
 app.post_init = on_startup
 
-# ▶️ RUN BOT
-print("🤖 Bot is running...")
+print("🤖 Bot with Database & Logging is running...")
 app.run_polling()

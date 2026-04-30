@@ -200,6 +200,9 @@ YOUR_USER_ID = 8789590706
 
 QUEUE_FILE = "queue.json"
 posting_paused = False
+ADMIN_ID = 8789590706
+POST_INTERVAL_HOURS = 2
+clear_confirmation_pending = False
 
 # 📦 LOAD & SAVE QUEUE
 def load_queue():
@@ -282,6 +285,11 @@ async def show_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ⏭️ SKIP
 async def skip_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+
     if update.message.from_user.id != 8789590706:
         return
 
@@ -296,6 +304,23 @@ async def skip_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 🗑️ CLEAR
 async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global clear_confirmation_pending
+
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+    clear_confirmation_pending = True
+
+    await update.message.reply_text(
+        "⚠ Are you sure you want to clear the full queue?\n\nReply with /confirmclear"
+    )
+
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+
     if update.message.from_user.id != 8789590706:
         return
 
@@ -326,6 +351,10 @@ async def bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 #Pause
 async def pause_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
     global posting_paused
     posting_paused = True
 
@@ -335,6 +364,11 @@ async def pause_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 #Resume
 async def resume_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+
     global posting_paused
     posting_paused = False
 
@@ -365,8 +399,118 @@ async def bot_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Health Check Failed:\n{str(e)}"
         )
 
+#Force Post
+async def force_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+
+    await update.message.reply_text(
+        "🚀 Force posting next queued video..."
+    )
+
+    await post_video()
+
+#Admin Only
+def is_admin(update):
+    return update.message.from_user.id == ADMIN_ID
+
+#Set Time
+async def set_post_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global POST_INTERVAL_HOURS
+
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /settime 3\nExample: /settime 3 = post every 3 hours"
+        )
+        return
+
+    try:
+        hours = int(context.args[0])
+
+        if hours <= 0:
+            await update.message.reply_text("Enter a valid number greater than 0")
+            return
+
+        POST_INTERVAL_HOURS = hours
+
+        scheduler.remove_all_jobs()
+        scheduler.add_job(
+            post_video,
+            "interval",
+            hours=POST_INTERVAL_HOURS
+        )
+
+        await update.message.reply_text(
+            f"⏰ Posting schedule updated: every {POST_INTERVAL_HOURS} hour(s)"
+        )
+
+    except:
+        await update.message.reply_text("Invalid input. Example: /settime 3")
+
+#Broadcast Message
+async def broadcast_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /broadcastchannel Your message here"
+        )
+        return
+
+    message = " ".join(context.args)
+
+    try:
+        await context.bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=message
+        )
+
+        await update.message.reply_text(
+            "📢 Message successfully sent to channel"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Broadcast failed:\n{str(e)}"
+        )
+
+#Clear Confirmation
+async def confirm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global clear_confirmation_pending
+
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+    if not clear_confirmation_pending:
+        await update.message.reply_text(
+            "No clear action pending."
+        )
+        return
+
+    save_queue([])
+
+    clear_confirmation_pending = False
+
+    await update.message.reply_text(
+        "🗑 Queue cleared successfully"
+    )
+
 # ❌ DELETE SPECIFIC
 async def delete_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update):
+        await update.message.reply_text("❌ Admin only command")
+        return
+
+
     if update.message.from_user.id != 8789590706:
         return
 
@@ -404,12 +548,17 @@ app.add_handler(CommandHandler("stats", bot_stats))
 app.add_handler(CommandHandler("pause", pause_posting))
 app.add_handler(CommandHandler("resume", resume_posting))
 app.add_handler(CommandHandler("health", bot_health))
+app.add_handler(CommandHandler("forcepost", force_post))
+app.add_handler(CommandHandler("settime", set_post_time))
+app.add_handler(CommandHandler("broadcastchannel", broadcast_channel))
+app.add_handler(CommandHandler("confirmclear", confirm_clear))
 
 # ⏰ SCHEDULE (10 POSTS DAILY AT :05)
-POST_HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
-
-for hour in POST_HOURS:
-    scheduler.add_job(post_video, "cron", hour=hour, minute=5)
+scheduler.add_job(
+    post_video,
+    "interval",
+    hours=POST_INTERVAL_HOURS
+)
 
 # ▶️ START SCHEDULER AFTER BOT STARTS
 async def on_startup(app):

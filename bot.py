@@ -89,6 +89,26 @@ async def check_next_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != YOUR_USER_ID:
         return
 
+# COUNT THE QUEUE 
+async def count_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        conn = sqlite3.connect("scheduler.db")
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) FROM scheduled_posts")
+        total_videos = cursor.fetchone()[0]
+
+        conn.close()
+
+        await update.message.reply_text(
+            f"📦 Total videos currently in queue: {total_videos}"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"Error checking queue: {str(e)}"
+        )
+
     # Get all jobs from the scheduler
     jobs = scheduler.get_jobs()
     
@@ -140,6 +160,7 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(MessageHandler(filters.VIDEO, save_video))
 app.add_handler(CommandHandler("queue", show_queue))
 app.add_handler(CommandHandler("clear", clear_queue))
+app.add_handler(CommandHandler("countqueue", count_queue))
 
 # ⏰ Scheduler
 from pytz import timezone
@@ -178,6 +199,7 @@ CHANNEL_ID = "@nsfw18content"
 YOUR_USER_ID = 8789590706
 
 QUEUE_FILE = "queue.json"
+posting_paused = False
 
 # 📦 LOAD & SAVE QUEUE
 def load_queue():
@@ -217,7 +239,15 @@ async def save_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 📤 POST VIDEO
 async def post_video():
+    global posting_paused
+
+    if posting_paused:
+        print("⏸ Posting is paused.")
+        return
+
     print("⏰ Scheduler triggered")
+
+    videos_queue = load_queue()
 
     if videos_queue:
         video_data = videos_queue.pop(0)
@@ -274,6 +304,67 @@ async def clear_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("🗑️ Queue cleared")
 
+# COUNT QUEUE
+async def count_queue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    videos_queue = load_queue()
+
+    await update.message.reply_text(
+        f"📦 Total videos currently in queue: {len(videos_queue)}"
+    )
+
+# BOT HEALTH
+async def bot_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    videos_queue = load_queue()
+
+    total_videos = len(videos_queue)
+
+    await update.message.reply_text(
+        f"📊 Bot Stats\n\n"
+        f"📦 Total videos in queue: {total_videos}\n"
+        f"🤖 Bot status: Running ✅"
+    )
+
+#Pause
+async def pause_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global posting_paused
+    posting_paused = True
+
+    await update.message.reply_text(
+        "⏸ Auto posting paused successfully"
+    )
+
+#Resume
+async def resume_posting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global posting_paused
+    posting_paused = False
+
+    await update.message.reply_text(
+        "▶️ Auto posting resumed successfully"
+    )
+
+#Bot Health
+async def bot_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global posting_paused
+
+    try:
+        videos_queue = load_queue()
+        total_videos = len(videos_queue)
+
+        posting_status = "Paused ⏸" if posting_paused else "Active ▶️"
+
+        await update.message.reply_text(
+            f"🩺 Bot Health Report\n\n"
+            f"🤖 Bot Status: Running ✅\n"
+            f"📦 Queue File: OK ✅\n"
+            f"⏸ Posting Status: {posting_status}\n"
+            f"📊 Videos in Queue: {total_videos}"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Health Check Failed:\n{str(e)}"
+        )
+
 # ❌ DELETE SPECIFIC
 async def delete_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != 8789590706:
@@ -308,6 +399,11 @@ app.add_handler(CommandHandler("skip", skip_video))
 app.add_handler(CommandHandler("clear", clear_queue))
 app.add_handler(CommandHandler("delete", delete_video))
 app.add_handler(CommandHandler("check", check_next_post))
+app.add_handler(CommandHandler("countqueue", count_queue))
+app.add_handler(CommandHandler("stats", bot_stats))
+app.add_handler(CommandHandler("pause", pause_posting))
+app.add_handler(CommandHandler("resume", resume_posting))
+app.add_handler(CommandHandler("health", bot_health))
 
 # ⏰ SCHEDULE (10 POSTS DAILY AT :05)
 POST_HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]
